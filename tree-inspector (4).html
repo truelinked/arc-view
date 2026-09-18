@@ -1,0 +1,867 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tree Inspector</title>
+<style>
+  :root {
+    --bg:#0f1218; --panel:#161b25; --line:#232b39; --sel:#1d2635; --sel-edge:#5aa9e6;
+    --text:#d3d9e3; --muted:#7c869a; --faint:#525d72;
+    --tw:#6b7688; --badge:#6b7688;
+    --k-key:#9db4d6; --k-str:#8fbf7f; --k-num:#e6b566; --k-bool:#c99be0; --k-null:#7c869a;
+    --k-attr:#7c9a86; --k-tag:#9db4d6; --punct:#586275;
+    --amber:#e6b566; --amber-bg:rgba(230,181,102,.18); --amber-strong:rgba(230,181,102,.30);
+    --blue:#5aa9e6; --red:#e0655f;
+    --mono:ui-monospace,"SF Mono","JetBrains Mono",Menlo,Consolas,monospace;
+    --sans:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+    --rowh:24px;
+  }
+  @media (prefers-color-scheme: light){
+    :root:not([data-theme="dark"]){
+      --bg:#fbfcfe; --panel:#fff; --line:#e4e8ef; --sel:#eaf2fb; --sel-edge:#2f7fd0;
+      --text:#1b2230; --muted:#5c6677; --faint:#9aa4b6; --tw:#8b95a6; --badge:#8b95a6;
+      --k-key:#3a5b8c; --k-str:#3f7d46; --k-num:#a5741a; --k-bool:#7a48a8; --k-null:#9aa4b6;
+      --k-attr:#4a7a5c; --k-tag:#3a5b8c; --punct:#9aa4b6;
+      --amber:#9c6a12; --amber-bg:rgba(184,124,20,.15); --amber-strong:rgba(184,124,20,.28);
+      --red:#c0392b;
+    }
+  }
+  * { box-sizing:border-box; }
+  html,body { height:100%; margin:0; }
+  body {
+    background:var(--bg); color:var(--text); font-family:var(--sans); font-size:13px;
+    height:100vh; overflow:hidden; display:flex; flex-direction:column;
+  }
+
+  /* viewport fills everything; the tree is the whole screen */
+  #viewport { flex:1; overflow:auto; position:relative; outline:none; }
+  #sizer { position:relative; width:100%; }
+  #rows { position:absolute; top:0; left:0; right:0; will-change:transform; }
+
+  .row {
+    display:flex; align-items:center; height:var(--rowh); line-height:var(--rowh);
+    font-family:var(--mono); font-size:12.5px; white-space:nowrap; cursor:default;
+    border-left:2px solid transparent;
+    user-select:none; -webkit-user-select:none;
+  }
+  .row:hover { background:color-mix(in srgb, var(--panel) 60%, transparent); }
+  .row.sel { background:var(--sel); border-left-color:var(--sel-edge); }
+  .row.match { background:var(--amber-bg); }
+  .row.sel.match { background:color-mix(in srgb, var(--sel) 70%, var(--amber-bg)); }
+  .row.current { background:var(--amber-strong); }
+
+  .tw { width:16px; flex:none; text-align:center; color:var(--tw); user-select:none; }
+  .tw.leaf { color:transparent; }
+  .key { color:var(--k-key); }
+  .tag { color:var(--k-tag); }
+  .colon,.eq { color:var(--punct); margin:0 5px 0 0; }
+  .eq { margin:0 5px; }
+  .badge { color:var(--badge); margin-left:8px; font-size:11px; }
+  .prev { color:var(--muted); margin-left:10px; overflow:hidden; text-overflow:ellipsis; }
+  .prev .pk { color:var(--faint); }
+  .prev .pdot { color:var(--faint); opacity:.7; margin:0 2px; }
+  .attr { color:var(--faint); margin-left:8px; }
+  .attr b { color:var(--k-attr); font-weight:normal; }
+  .attr i { color:var(--k-str); font-style:normal; }
+  .val { overflow:hidden; text-overflow:ellipsis; }
+  .val.str { color:var(--k-str); }
+  .val.num { color:var(--k-num); }
+  .val.bool { color:var(--k-bool); }
+  .val.null { color:var(--k-null); }
+  .val.text { color:var(--k-str); }
+  mark { background:var(--amber-strong); color:inherit; border-radius:2px; padding:0 1px; }
+
+  /* slim status bar — the only permanent chrome */
+  footer {
+    flex:none; height:26px; display:flex; align-items:center; gap:0;
+    border-top:1px solid var(--line); background:var(--panel);
+    font-family:var(--mono); font-size:11px; color:var(--muted);
+  }
+  footer .crumb { flex:1; min-width:0; padding:0 12px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  footer .crumb span { color:var(--faint); }
+  footer .crumb b { color:var(--text); font-weight:600; }
+  footer .helpbtn { flex:none; background:none; border:0; font:inherit; font-family:var(--mono); font-size:11px; color:var(--muted); cursor:pointer; padding:0 14px; }
+  footer .helpbtn b { color:var(--text); }
+  footer .helpbtn:hover { color:var(--text); }
+  footer .meta { flex:1; min-width:0; text-align:right; padding:0 12px; color:var(--faint); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  footer .meta b { color:var(--muted); font-weight:500; }
+  footer kbd {
+    font-family:var(--mono); font-size:10px; background:var(--bg); border:1px solid var(--line);
+    border-radius:3px; padding:0 4px; color:var(--muted);
+  }
+
+  /* command palette / search */
+  #palette {
+    position:fixed; top:0; left:50%; transform:translate(-50%,-120%);
+    width:min(620px,92vw); background:var(--panel); border:1px solid var(--line);
+    border-top:none; border-radius:0 0 12px 12px; box-shadow:0 12px 40px rgba(0,0,0,.4);
+    display:flex; align-items:center; gap:10px; padding:10px 14px; z-index:40;
+    transition:transform .14s cubic-bezier(.2,.7,.3,1);
+  }
+  #palette.open { transform:translate(-50%,0); }
+  #palette .prompt { color:var(--faint); font-family:var(--mono); }
+  #palette input {
+    flex:1; background:none; border:0; outline:0; color:var(--text);
+    font-family:var(--mono); font-size:15px; padding:4px 0;
+  }
+  #palette input::placeholder { color:var(--faint); }
+  #palette .count { color:var(--muted); font-family:var(--mono); font-size:12px; flex:none; }
+  #palette .count.none { color:var(--amber); }
+
+  /* empty state */
+  #empty { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; padding:32px; }
+  #empty.hide { display:none; }
+  #empty .drop {
+    border:1.5px dashed var(--line); border-radius:16px; padding:40px 52px; max-width:560px; text-align:center;
+    transition:border-color .12s, background .12s;
+  }
+  body.dragging #empty .drop { border-color:var(--blue); background:var(--panel); }
+  #empty h2 { margin:0 0 6px; font-size:19px; }
+  #empty p { margin:0 0 22px; color:var(--muted); line-height:1.55; }
+  #empty .actions { display:flex; gap:10px; justify-content:center; flex-wrap:wrap; }
+  #empty button {
+    font:inherit; font-size:13px; cursor:pointer; border-radius:8px; padding:9px 15px;
+    border:1px solid var(--line); background:var(--bg); color:var(--text);
+  }
+  #empty button.primary { background:var(--blue); border-color:var(--blue); color:#06121e; font-weight:600; }
+  #empty button:hover { border-color:var(--blue); }
+  #empty .kbd-list { margin-top:24px; font-family:var(--mono); font-size:11px; color:var(--faint); line-height:1.9; }
+
+  /* help overlay */
+  #help {
+    position:absolute; inset:0; background:color-mix(in srgb,var(--bg) 80%, transparent);
+    display:none; align-items:center; justify-content:center; z-index:30;
+  }
+  #help.open { display:flex; }
+  #help .card {
+    background:var(--panel); border:1px solid var(--line); border-radius:14px; padding:26px 30px;
+    max-width:520px; width:90%;
+  }
+  #help h3 { margin:0 0 16px; font-size:15px; }
+  #help table { width:100%; border-collapse:collapse; font-size:13px; }
+  #help td { padding:5px 0; color:var(--muted); }
+  #help td.k { width:180px; }
+  #help kbd {
+    font-family:var(--mono); font-size:11px; background:var(--bg); border:1px solid var(--line);
+    border-radius:4px; padding:1px 6px; color:var(--text); margin-right:4px;
+  }
+  #empty kbd {
+    font-family:var(--mono); font-size:11px; background:var(--bg); border:1px solid var(--line);
+    border-radius:4px; padding:1px 6px; color:var(--text);
+  }
+
+  /* history panel */
+  #history {
+    position:absolute; inset:0; background:color-mix(in srgb,var(--bg) 80%, transparent);
+    display:none; align-items:flex-start; justify-content:center; padding-top:8vh; z-index:30;
+  }
+  #history.open { display:flex; }
+  #history .card {
+    background:var(--panel); border:1px solid var(--line); border-radius:14px; padding:16px 18px;
+    width:min(580px,92vw); max-height:80vh; display:flex; flex-direction:column;
+  }
+  #history h3 { margin:0 0 12px; font-size:14px; display:flex; justify-content:space-between; align-items:baseline; gap:12px; }
+  #history h3 .sub { font-family:var(--mono); font-size:10.5px; color:var(--faint); font-weight:normal; }
+  #history .hlist { overflow:auto; margin:0 -6px; }
+  .hitem { display:flex; align-items:center; gap:10px; padding:8px 10px; border-radius:8px; cursor:pointer; }
+  .hitem:hover { background:color-mix(in srgb,var(--sel) 55%, transparent); }
+  .hitem.sel { background:var(--sel); }
+  .hitem .fmt { font-family:var(--mono); font-size:10px; padding:1px 6px; border-radius:4px; border:1px solid var(--line); color:var(--muted); flex:none; text-transform:uppercase; letter-spacing:.04em; }
+  .hitem .fmt.json { color:var(--k-num); }
+  .hitem .fmt.xml { color:var(--k-key); }
+  .hitem .htitle { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--text); font-size:13px; font-family:var(--mono); }
+  .hitem .hmeta { flex:none; font-family:var(--mono); font-size:10.5px; color:var(--faint); }
+  #hempty { color:var(--muted); font-size:13px; padding:14px 10px; }
+  #busy {
+    position:absolute; inset:0; display:none; align-items:center; justify-content:center;
+    background:color-mix(in srgb,var(--bg) 82%, transparent); font-family:var(--mono); color:var(--muted); z-index:15;
+  }
+  #busy.show { display:flex; }
+
+  /* non-blocking message banner */
+  #banner {
+    flex:none; display:none; align-items:flex-start; gap:10px;
+    padding:9px 14px; font-family:var(--mono); font-size:12px; line-height:1.5;
+    border-bottom:1px solid var(--line); background:var(--panel);
+  }
+  #banner.show { display:flex; }
+  #banner.error { background:color-mix(in srgb,var(--red) 15%, var(--panel)); border-bottom-color:color-mix(in srgb,var(--red) 45%, var(--line)); }
+  #banner.warn  { background:var(--amber-bg); border-bottom-color:color-mix(in srgb,var(--amber) 45%, var(--line)); }
+  #banner.info  { background:color-mix(in srgb,var(--blue) 13%, var(--panel)); border-bottom-color:color-mix(in srgb,var(--blue) 40%, var(--line)); }
+  #banner .ico { flex:none; }
+  #banner.error .ico { color:var(--red); }
+  #banner.warn .ico { color:var(--amber); }
+  #banner.info .ico { color:var(--blue); }
+  #banner .body { flex:1; min-width:0; color:var(--text); }
+  #banner .msg { white-space:pre-wrap; word-break:break-word; }
+  #banner .snip { margin-top:5px; white-space:pre; overflow-x:auto; color:var(--muted); font-size:11.5px; }
+  #banner .x { flex:none; cursor:pointer; color:var(--muted); border:0; background:none; font:inherit; font-size:13px; padding:0 2px; }
+  #banner .x:hover { color:var(--text); }
+</style>
+</head>
+<body data-theme="dark">
+  <div id="banner">
+    <span class="ico" id="bIco"></span>
+    <div class="body"><div class="msg" id="bMsg"></div><div class="snip" id="bSnip"></div></div>
+    <button class="x" id="bX" title="Dismiss (Esc)">✕</button>
+  </div>
+  <div id="viewport" tabindex="0">
+    <div id="sizer"><div id="rows"></div></div>
+
+    <div id="palette">
+      <span class="prompt">⌕</span>
+      <input id="pinput" type="text" spellcheck="false" autocomplete="off"
+             placeholder="search keys & values — substring, or * ? wildcards. Enter = next match">
+      <span class="count" id="pcount"></span>
+    </div>
+
+    <div id="empty">
+      <div class="drop">
+        <h2>Paste, or open a file</h2>
+        <p>Paste JSON or XML anywhere with <kbd>⌘V</kbd> to open it as a new document — or open a file from disk. Everything is parsed in memory and rendered one screenful at a time, driven entirely from the keyboard.</p>
+        <div class="actions">
+          <button class="primary" id="openBtn">Open file…</button>
+          <button id="sampleJson">Sample JSON</button>
+          <button id="sampleXml">Sample XML</button>
+          <input type="file" id="fileInput" accept=".json,.xml,.txt,application/json,text/xml,application/xml" hidden>
+        </div>
+        <div class="kbd-list">
+          ↑ ↓ move &nbsp;·&nbsp; → ← expand / collapse &nbsp;·&nbsp; ⌘K search &nbsp;·&nbsp; h history &nbsp;·&nbsp; ? shortcuts
+        </div>
+      </div>
+    </div>
+
+    <div id="busy">working…</div>
+  </div>
+
+  <footer>
+    <div class="crumb" id="crumb"></div>
+    <button class="helpbtn" id="helpBtn"><b>?</b> for help</button>
+    <div class="meta" id="meta"></div>
+  </footer>
+
+  <div id="help">
+    <div class="card">
+      <h3>Keyboard</h3>
+      <table>
+        <tr><td class="k"><kbd>↑</kbd><kbd>↓</kbd></td><td>move selection</td></tr>
+        <tr><td class="k"><kbd>→</kbd></td><td>expand, or step into first child</td></tr>
+        <tr><td class="k"><kbd>←</kbd></td><td>collapse, or jump to parent</td></tr>
+        <tr><td class="k"><kbd>⏎</kbd> <kbd>Space</kbd></td><td>toggle node</td></tr>
+        <tr><td class="k"><kbd>⇧→</kbd> <kbd>⇧←</kbd></td><td>expand / collapse whole subtree</td></tr>
+        <tr><td class="k"><kbd>Home</kbd> <kbd>End</kbd></td><td>first / last node</td></tr>
+        <tr><td class="k"><kbd>PgUp</kbd> <kbd>PgDn</kbd></td><td>page up / down</td></tr>
+        <tr><td class="k"><kbd>⌘K</kbd> <kbd>/</kbd></td><td>open search</td></tr>
+        <tr><td class="k"><kbd>⏎</kbd> <kbd>⇧⏎</kbd></td><td>in search: next / previous match</td></tr>
+        <tr><td class="k"><kbd>⌘V</kbd></td><td>paste clipboard as a new document</td></tr>
+        <tr><td class="k"><kbd>o</kbd></td><td>open a file</td></tr>
+        <tr><td class="k"><kbd>h</kbd></td><td>open history</td></tr>
+        <tr><td class="k"><kbd>Esc</kbd></td><td>close search / any panel</td></tr>
+      </table>
+    </div>
+  </div>
+
+  <div id="history">
+    <div class="card">
+      <h3>History <span class="sub">↑↓ select · ⏎ open · ⌫ remove · Esc close</span></h3>
+      <div class="hlist" id="hlist"></div>
+      <div id="hempty">Nothing yet — paste or open a file.</div>
+    </div>
+  </div>
+
+<script>
+"use strict";
+const $ = id => document.getElementById(id);
+const viewport=$("viewport"), sizer=$("sizer"), rowsEl=$("rows");
+const palette=$("palette"), pinput=$("pinput"), pcount=$("pcount");
+const emptyEl=$("empty"), busyEl=$("busy"), helpEl=$("help"), fileInput=$("fileInput");
+const historyEl=$("history"), hlistEl=$("hlist"), hemptyEl=$("hempty");
+const crumbEl=$("crumb"), metaEl=$("meta");
+
+// history (session, in-memory): each entry re-parses on restore
+let history=[], historyOpen=false, hSel=0, pasteCount=0;
+const HISTORY_MAX=40;
+
+const ROW_H=24, INDENT=15, PAD=8, OVERSCAN=8, DISP_MAX=400;
+const fmt=n=>n.toLocaleString("en-US");
+
+// ---------- model ----------
+// node = {kind, key, value, attrs, children, expanded, depth, parent, _s, _m}
+// kinds: obj arr str num bool null   (JSON) | el text (XML)
+let roots=[], flat=[], allNodes=[], sel=0;
+let searchMatches=[], curMatch=-1, activeQuery="", activeWild=false, paletteOpen=false;
+
+// ---------- XML entity decode ----------
+function decode(s){
+  if(s.indexOf("&")===-1) return s;
+  return s.replace(/&amp;/g,"&").replace(/&lt;/g,"<").replace(/&gt;/g,">")
+          .replace(/&quot;/g,'"').replace(/&#39;/g,"'").replace(/&apos;/g,"'");
+}
+
+// ---------- XML parse (no DOM) ----------
+function parseXML(s){
+  const t0=performance.now();
+  const rootChildren=[];
+  const stack=[{children:rootChildren}];
+  const top=()=>stack[stack.length-1];
+  function addText(raw,cdata){
+    const t=cdata?raw:raw.replace(/\s+/g," ").trim();
+    if(!t) return;
+    top().children.push({kind:"text",key:"",value:decode(t),attrs:null,children:null,expanded:false});
+  }
+  function parseTag(tag){
+    tag=tag.trim();
+    const m=/^([^\s\/>]+)/.exec(tag);
+    const name=m?m[1]:tag;
+    let attrs=null;
+    const re=/([^\s=]+)\s*=\s*"([^"]*)"|([^\s=]+)\s*=\s*'([^']*)'/g; let a;
+    while((a=re.exec(tag))){
+      (attrs||(attrs=[])).push(a[1]!==undefined?{name:a[1],value:decode(a[2])}:{name:a[3],value:decode(a[4])});
+    }
+    return {name,attrs};
+  }
+  let i=0; const n=s.length; const issues=[];
+  while(i<n){
+    const lt=s.indexOf("<",i);
+    if(lt===-1){ addText(s.slice(i)); break; }
+    if(lt>i) addText(s.slice(i,lt));
+    if(s.startsWith("<!--",lt)){ const e=s.indexOf("-->",lt); i=e<0?n:e+3; continue; }
+    if(s.startsWith("<![CDATA[",lt)){ const e=s.indexOf("]]>",lt); addText(s.slice(lt+9,e<0?n:e),true); i=e<0?n:e+3; continue; }
+    if(s.startsWith("<?",lt)){ const e=s.indexOf("?>",lt); i=e<0?n:e+2; continue; }
+    if(s.startsWith("<!",lt)){ const e=s.indexOf(">",lt); i=e<0?n:e+1; continue; }
+    const gt=s.indexOf(">",lt); if(gt===-1){ issues.push("unterminated tag near end of input"); break; }
+    let tag=s.slice(lt+1,gt);
+    if(tag[0]==="/"){
+      const cname=tag.slice(1).trim();
+      if(stack.length>1){
+        const open=stack[stack.length-1];
+        if(open.key&&cname&&open.key!==cname&&issues.length<20) issues.push(`</${cname}> closes <${open.key}>`);
+        stack.pop();
+      } else if(issues.length<20){ issues.push(`stray </${cname}>`); }
+      i=gt+1; continue;
+    }
+    let selfClose=false;
+    if(tag.endsWith("/")){ selfClose=true; tag=tag.slice(0,-1); }
+    const {name,attrs}=parseTag(tag);
+    const el={kind:"el",key:name,value:null,attrs,children:[],expanded:false};
+    top().children.push(el);
+    if(!selfClose) stack.push(el);
+    i=gt+1;
+  }
+  if(stack.length>1){
+    const names=stack.slice(1).map(x=>x.key);
+    issues.unshift(`${names.length} unclosed tag${names.length>1?"s":""}: <${names.slice(0,6).join(">, <")}>${names.length>6?" …":""}`);
+  }
+  // fold: elements whose children are only text become leaves with a value
+  (function fold(list){
+    for(const node of list){
+      if(node.kind!=="el"||!node.children) continue;
+      const hasEl=node.children.some(c=>c.kind==="el");
+      if(!hasEl){
+        const txt=node.children.filter(c=>c.kind==="text").map(c=>c.value).join(" ");
+        node.value=txt||null; node.children=null;
+      } else { fold(node.children); }
+    }
+  })(rootChildren);
+  return { roots:rootChildren.filter(n=>n.kind==="el"), issues, ms:performance.now()-t0 };
+}
+
+// ---------- JSON convert ----------
+function convertJSON(data,key){
+  if(Array.isArray(data)){
+    const node={kind:"arr",key,value:null,attrs:null,children:[],expanded:false};
+    for(let i=0;i<data.length;i++) node.children.push(convertJSON(data[i],String(i)));
+    return node;
+  }
+  if(data&&typeof data==="object"){
+    const node={kind:"obj",key,value:null,attrs:null,children:[],expanded:false};
+    for(const k of Object.keys(data)) node.children.push(convertJSON(data[k],k));
+    return node;
+  }
+  const kind=data===null?"null":typeof data==="number"?"num":typeof data==="boolean"?"bool":"str";
+  return {kind,key,value:data===null?"null":String(data),attrs:null,children:null,expanded:false};
+}
+
+// ---------- finalize: depth, parent, flat allNodes ----------
+function finalize(){
+  allNodes=[];
+  const walk=(n,depth,parent)=>{ n.depth=depth; n.parent=parent; n._s=undefined; n._m=false; allNodes.push(n);
+    if(n.children) for(const c of n.children) walk(c,depth+1,n); };
+  for(const r of roots){ r.expanded=true; walk(r,0,null); }
+}
+
+// ---------- visible flattening (the core of tree virtualization) ----------
+function appendVisible(node,out){
+  const ch=node.children; if(!ch) return;
+  for(const c of ch){ out.push(c); if(c.expanded&&c.children) appendVisible(c,out); }
+}
+function rebuild(){
+  flat=[];
+  for(const r of roots){ flat.push(r); if(r.expanded&&r.children) appendVisible(r,flat); }
+}
+function isExpandable(n){ return !!(n.children&&n.children.length); }
+
+function expandAt(i){
+  const node=flat[i];
+  if(!isExpandable(node)||node.expanded) return false;
+  node.expanded=true;
+  const insert=[]; appendVisible(node,insert);
+  if(insert.length) flat=flat.slice(0,i+1).concat(insert,flat.slice(i+1));
+  return true;
+}
+function collapseAt(i){
+  const node=flat[i];
+  if(!isExpandable(node)||!node.expanded) return false;
+  node.expanded=false;
+  const d=node.depth; let j=i+1;
+  while(j<flat.length&&flat[j].depth>d) j++;
+  const removed=j-(i+1);
+  if(removed) flat.splice(i+1,removed);
+  if(sel>i&&sel<=i+removed) sel=i;   // selection was inside the collapsed subtree
+  return true;
+}
+function setSubtree(node,val){
+  const st=[node];
+  while(st.length){ const x=st.pop(); if(x.children){ x.expanded=val; for(const c of x.children) if(c.children) st.push(c); } }
+}
+
+// ---------- rendering ----------
+function escapeHtml(s){ return s.replace(/[&<>]/g,c=>c==="&"?"&amp;":c==="<"?"&lt;":"&gt;"); }
+function hl(text){
+  if(!text) return "";
+  // No active query: just clamp long text (row is one line + ellipsis anyway).
+  if(!activeQuery||activeWild)
+    return escapeHtml(text.length>DISP_MAX?text.slice(0,DISP_MAX)+"…":text);
+  // Active query: pick a display window, biased toward the first match if it's far in.
+  let prefix="",suffix="";
+  if(text.length>DISP_MAX){
+    let start=0;
+    const first=text.toLowerCase().indexOf(activeQuery);
+    if(first>DISP_MAX-60){ start=first-40; prefix="…"; }
+    const end=start+DISP_MAX;
+    if(end<text.length) suffix="…";
+    text=text.slice(start,end);
+  }
+  const low=text.toLowerCase(); let idx=low.indexOf(activeQuery);
+  if(idx<0) return escapeHtml(prefix)+escapeHtml(text)+escapeHtml(suffix);
+  let out=escapeHtml(prefix),from=0;
+  while(idx>=0){ out+=escapeHtml(text.slice(from,idx))+"<mark>"+escapeHtml(text.slice(idx,idx+activeQuery.length))+"</mark>"; from=idx+activeQuery.length; idx=low.indexOf(activeQuery,from); }
+  return out+escapeHtml(text.slice(from))+escapeHtml(suffix);
+}
+function clampVal(s){ s=String(s); return s.length>40 ? s.slice(0,40)+"…" : s; }
+// Preview of a collapsed node: up to 2 leading leaf children shown as key/value.
+function previewHTML(n){
+  const kids=n.children; if(!kids||!kids.length) return "";
+  const isArr=n.kind==="arr";
+  const parts=[];
+  for(let i=0;i<kids.length && parts.length<2;i++){
+    const c=kids[i];
+    if(c.children) break;                       // only preview leading leaf children
+    let v;
+    if(c.value==null) v = c.kind==="null" ? "null" : "";
+    else if(c.kind==="str") v = '"'+escapeHtml(clampVal(c.value))+'"';   // quote JSON strings only
+    else v = escapeHtml(clampVal(c.value));                              // num/bool/xml-text raw
+    const label = isArr ? "" : `<span class="pk">${escapeHtml(c.key)}:</span> `;
+    parts.push(label+v);
+  }
+  if(parts.length) return parts.join('<span class="pdot">·</span>');
+  if(n.kind==="obj") return `<span class="pk">${escapeHtml(kids.slice(0,5).map(c=>c.key).join(", "))}${kids.length>5?", …":""}</span>`;
+  return "";
+}
+function rowHTML(n,absIdx){
+  let cls="row"; if(absIdx===sel) cls+=" sel"; if(n._m) cls+=" match"; if(n._m&&searchMatches[curMatch]===n) cls+=" current";
+  const pad=PAD+n.depth*INDENT;
+  const tw=isExpandable(n)?(n.expanded?"▾":"▸"):"";
+  let inner=`<span class="tw${isExpandable(n)?"":" leaf"}">${tw}</span>`;
+
+  if(n.kind==="el"){
+    inner+=`<span class="tag">${hl(n.key)}</span>`;
+    if(n.attrs){ for(const a of n.attrs) inner+=`<span class="attr"><b>${hl(a.name)}</b>=<i>"${hl(a.value)}"</i></span>`; }
+    if(n.children){
+      inner+=`<span class="badge">${n.children.length}</span>`;
+      if(!n.expanded){ const p=previewHTML(n); if(p) inner+=`<span class="prev">${p}</span>`; }
+    }
+    else if(n.value!=null){ inner+=`<span class="eq">=</span><span class="val text">"${hl(n.value)}"</span>`; }
+  } else if(n.kind==="obj"||n.kind==="arr"){
+    inner+=`<span class="key">${hl(n.key)}</span>`;
+    inner+=`<span class="badge">${n.kind==="arr"?"["+n.children.length+"]":"{"+n.children.length+"}"}</span>`;
+    if(!n.expanded){ const p=previewHTML(n); if(p) inner+=`<span class="prev">${p}</span>`; }
+  } else {
+    inner+=`<span class="key">${hl(n.key)}</span><span class="colon">:</span>`;
+    const q = n.kind==="str"?`"${hl(n.value)}"`:hl(n.value);
+    inner+=`<span class="val ${n.kind}">${q}</span>`;
+  }
+  return `<div class="${cls}" data-r="${absIdx}" style="padding-left:${pad}px">${inner}</div>`;
+}
+function render(){
+  const top=viewport.scrollTop, h=viewport.clientHeight;
+  let start=Math.floor(top/ROW_H)-OVERSCAN; if(start<0) start=0;
+  let count=Math.ceil(h/ROW_H)+OVERSCAN*2;
+  if(start+count>flat.length) count=flat.length-start;
+  rowsEl.style.transform=`translateY(${start*ROW_H}px)`;
+  let html="";
+  for(let r=start;r<start+count;r++) html+=rowHTML(flat[r],r);
+  rowsEl.innerHTML=html;
+  updateCrumb();
+}
+function layout(){ sizer.style.height=(flat.length*ROW_H)+"px"; }
+
+// ---------- selection / navigation ----------
+function ensureVisible(idx){
+  const t=idx*ROW_H, b=t+ROW_H;
+  if(t<viewport.scrollTop) viewport.scrollTop=t;
+  else if(b>viewport.scrollTop+viewport.clientHeight) viewport.scrollTop=b-viewport.clientHeight;
+}
+function select(idx){
+  if(idx<0) idx=0; if(idx>flat.length-1) idx=flat.length-1;
+  sel=idx; ensureVisible(sel); render();
+}
+function parentIndex(i){
+  const d=flat[i].depth; for(let j=i-1;j>=0;j--) if(flat[j].depth<d) return j; return -1;
+}
+function updateCrumb(){
+  const n=flat[sel]; if(!n){ crumbEl.innerHTML=""; return; }
+  const parts=[]; let x=n;
+  while(x){ parts.unshift(x.kind==="el"?x.key:x.key); x=x.parent; }
+  const html=parts.map((p,i)=> i===parts.length-1?`<b>${escapeHtml(p)}</b>`:escapeHtml(p)).join(' <span>/</span> ');
+  crumbEl.innerHTML=html;
+}
+function updateMeta(){
+  metaEl.innerHTML=`<b>${fmt(allNodes.length)}</b> nodes · <b>${fmt(flat.length)}</b> visible`;
+}
+
+// ---------- search ----------
+function globToRegex(glob){
+  const esc=glob.replace(/[.+^${}()|[\]\\]/g,"\\$&");
+  return new RegExp(esc.replace(/\*/g,".*").replace(/\?/g,"."),""); // unanchored = "contains"
+}
+function searchText(n){
+  if(n._s!==undefined) return n._s;
+  let s=n.key||"";
+  if(n.value!=null) s+=" "+n.value;
+  if(n.attrs) for(const a of n.attrs) s+=" "+a.name+" "+a.value;
+  return (n._s=s.toLowerCase());
+}
+function runSearch(){
+  const raw=pinput.value.trim();
+  for(const n of searchMatches) n._m=false;   // clear previous
+  searchMatches=[]; curMatch=-1;
+  activeQuery=raw.toLowerCase(); activeWild=/[*?]/.test(raw);
+  if(raw===""){ pcount.textContent=""; render(); return; }
+  const t0=performance.now();
+  let test;
+  if(activeWild){ const re=globToRegex(activeQuery); test=s=>re.test(s); }
+  else test=s=>s.indexOf(activeQuery)!==-1;
+  for(let i=0;i<allNodes.length;i++){ const n=allNodes[i]; if(test(searchText(n))){ n._m=true; searchMatches.push(n); } }
+  const ms=performance.now()-t0;
+  if(searchMatches.length){ curMatch=0; pcount.classList.remove("none"); pcount.textContent=`1 / ${fmt(searchMatches.length)}  ·  ${ms<1?"<1":ms.toFixed(0)}ms`; jumpToMatch(); }
+  else { pcount.classList.add("none"); pcount.textContent="no matches"; render(); }
+}
+function jumpToMatch(){
+  const n=searchMatches[curMatch]; if(!n) return;
+  for(let p=n.parent;p;p=p.parent) if(p.children) p.expanded=true;   // reveal path
+  rebuild(); layout(); updateMeta();
+  sel=flat.indexOf(n); if(sel<0) sel=0;
+  ensureVisible(sel); render();
+}
+function gotoMatch(delta){
+  if(!searchMatches.length) return;
+  curMatch=(curMatch+delta+searchMatches.length)%searchMatches.length;
+  pcount.textContent=`${curMatch+1} / ${fmt(searchMatches.length)}`;
+  jumpToMatch();
+}
+function openPalette(){ paletteOpen=true; palette.classList.add("open"); pinput.focus(); pinput.select(); }
+function closePalette(){ paletteOpen=false; palette.classList.remove("open"); viewport.focus(); }
+
+// ---------- key handling ----------
+let searchDebounce;
+pinput.addEventListener("input",()=>{ clearTimeout(searchDebounce); searchDebounce=setTimeout(runSearch,90); });
+pinput.addEventListener("keydown",e=>{
+  if(e.key==="Enter"){ e.preventDefault(); gotoMatch(e.shiftKey?-1:1); }
+  else if(e.key==="ArrowDown"){ e.preventDefault(); gotoMatch(1); }
+  else if(e.key==="ArrowUp"){ e.preventDefault(); gotoMatch(-1); }
+  else if(e.key==="Escape"){ e.preventDefault(); closePalette(); }
+});
+
+document.addEventListener("keydown",e=>{
+  if(historyOpen){
+    if(e.key==="Escape"||e.key.toLowerCase()==="h"){ e.preventDefault(); closeHistory(); }
+    else if(e.key==="ArrowDown"){ e.preventDefault(); hSel=Math.min(hSel+1,history.length-1); renderHistory(); }
+    else if(e.key==="ArrowUp"){ e.preventDefault(); hSel=Math.max(hSel-1,0); renderHistory(); }
+    else if(e.key==="Enter"){ e.preventDefault(); if(history[hSel]) restore(history[hSel]); }
+    else if(e.key==="Backspace"||e.key==="Delete"){ e.preventDefault(); removeHistory(hSel); }
+    return;
+  }
+  if((e.metaKey||e.ctrlKey)&&e.key.toLowerCase()==="k"){ e.preventDefault(); paletteOpen?closePalette():openPalette(); return; }
+  if(paletteOpen) return;                       // palette input owns the keys
+  if(helpEl.classList.contains("open")){ if(e.key==="Escape"||e.key==="?"){ helpEl.classList.remove("open"); } return; }
+  const typing = e.target && (e.target.tagName==="INPUT"||e.target.tagName==="TEXTAREA");
+  if(e.key==="?" && !typing){ e.preventDefault(); helpEl.classList.add("open"); return; }
+  if(e.key==="/" && !typing){ e.preventDefault(); openPalette(); return; }
+  if((e.key==="h"||e.key==="H") && !typing && !e.metaKey && !e.ctrlKey){ e.preventDefault(); openHistory(); return; }
+  if((e.key==="o"||e.key==="O") && !typing && !e.metaKey && !e.ctrlKey){ e.preventDefault(); fileInput.click(); return; }
+  if(e.key==="Escape" && bannerShown()){ hideBanner(); return; }
+  if(!flat.length) return;
+  const n=flat[sel];
+  switch(e.key){
+    case "ArrowDown": e.preventDefault(); select(sel+1); break;
+    case "ArrowUp":   e.preventDefault(); select(sel-1); break;
+    case "ArrowRight":
+      e.preventDefault();
+      if(e.shiftKey&&isExpandable(n)){ setSubtree(n,true); rebuild(); layout(); updateMeta(); sel=flat.indexOf(n); render(); }
+      else if(isExpandable(n)&&!n.expanded){ expandAt(sel); layout(); updateMeta(); render(); }
+      else if(isExpandable(n)&&n.expanded){ select(sel+1); }
+      break;
+    case "ArrowLeft":
+      e.preventDefault();
+      if(e.shiftKey){
+        // collapse this node's whole subtree; if it's a leaf or already collapsed,
+        // climb to the nearest expanded ancestor and collapse that ("zoom out")
+        let target=n, ti=sel;
+        if(!(isExpandable(target)&&target.expanded)){
+          const p=parentIndex(sel);
+          if(p>=0){ ti=p; target=flat[p]; }
+        }
+        if(isExpandable(target)){ setSubtree(target,false); rebuild(); layout(); updateMeta(); sel=flat.indexOf(target); ensureVisible(sel); render(); }
+        break;
+      }
+      if(isExpandable(n)&&n.expanded){ collapseAt(sel); layout(); updateMeta(); render(); }
+      else { const p=parentIndex(sel); if(p>=0) select(p); }
+      break;
+    case "Enter": case " ":
+      e.preventDefault();
+      if(isExpandable(n)){ n.expanded?collapseAt(sel):expandAt(sel); layout(); updateMeta(); render(); }
+      break;
+    case "Home": e.preventDefault(); select(0); break;
+    case "End":  e.preventDefault(); select(flat.length-1); break;
+    case "PageDown": e.preventDefault(); select(sel+Math.floor(viewport.clientHeight/ROW_H)); break;
+    case "PageUp":   e.preventDefault(); select(sel-Math.floor(viewport.clientHeight/ROW_H)); break;
+    case "Escape": if(helpEl.classList.contains("open")) helpEl.classList.remove("open"); break;
+  }
+});
+
+// mouse
+rowsEl.addEventListener("click",e=>{
+  const row=e.target.closest(".row"); if(!row) return;
+  const idx=+row.dataset.r; const n=flat[idx];
+  if(e.target.classList.contains("tw")&&isExpandable(n)){ n.expanded?collapseAt(idx):expandAt(idx); layout(); updateMeta(); sel=idx; render(); return; }
+  select(idx);
+});
+viewport.addEventListener("scroll",render,{passive:true});
+window.addEventListener("resize",render);
+helpEl.addEventListener("click",e=>{ if(e.target===helpEl) helpEl.classList.remove("open"); });
+$("helpBtn").addEventListener("click",()=>helpEl.classList.add("open"));
+
+// ---------- message banner ----------
+const bannerEl=$("banner"), bIco=$("bIco"), bMsg=$("bMsg"), bSnip=$("bSnip"), bX=$("bX");
+let bannerTimer=null;
+function showBanner(kind,msg,snip,sticky){
+  clearTimeout(bannerTimer);
+  bannerEl.className="show "+kind;
+  bIco.textContent = kind==="error"?"⚠":kind==="warn"?"△":"ℹ";
+  bMsg.textContent=msg;
+  if(snip){ bSnip.innerHTML=snip; bSnip.style.display="block"; } else { bSnip.style.display="none"; }
+  render();                                   // banner steals height; re-window the list
+  if(!sticky) bannerTimer=setTimeout(hideBanner,7000);
+}
+function hideBanner(){ clearTimeout(bannerTimer); bannerEl.className=""; render(); }
+bX.addEventListener("click",hideBanner);
+function bannerShown(){ return bannerEl.classList.contains("show"); }
+
+function jsonErrorSnippet(text,err){
+  const m=err.message;
+  let line,col,lineText;
+  let p=/position (\d+)/.exec(m);
+  if(p){ const pos=+p[1]; const before=text.slice(0,pos); line=before.split("\n").length; col=pos-before.lastIndexOf("\n"); lineText=text.split("\n")[line-1]||""; }
+  else { const lc=/line (\d+) column (\d+)/i.exec(m); if(lc){ line=+lc[1]; col=+lc[2]; lineText=text.split("\n")[line-1]||""; } }
+  if(line==null) return {loc:"",snip:""};
+  const shown=lineText.length>110?lineText.slice(0,110)+"…":lineText;
+  const caret=" ".repeat(Math.max(0,Math.min(col-1,shown.length)))+"^";
+  return { loc:` (line ${line}, column ${col})`, snip:escapeHtml(shown)+"\n"+caret };
+}
+function tryNDJSON(text){
+  const lines=text.split(/\r?\n/); const recs=[]; let nonempty=0;
+  for(const ln of lines){ const s=ln.trim(); if(!s) continue; nonempty++; try{ recs.push(JSON.parse(s)); }catch{ return null; } }
+  return (nonempty>=2 && recs.length===nonempty) ? recs : null;
+}
+
+// ---------- load ----------
+function afterLoad(desc,record){
+  finalize(); rebuild(); sel=0;
+  emptyEl.classList.add("hide"); viewport.scrollTop=0;
+  pinput.value=""; searchMatches=[]; activeQuery=""; pcount.textContent="";
+  layout(); updateMeta(); render(); viewport.focus();
+  if(record!==false) addHistory(desc);
+}
+function withBusy(label,fn){
+  busyEl.textContent=label; busyEl.classList.add("show");
+  requestAnimationFrame(()=>requestAnimationFrame(()=>{ try{ fn(); } finally { busyEl.classList.remove("show"); } }));
+}
+function loadText(text,name,record){
+  if(!text || !text.trim()){ showBanner("error","Nothing to parse — the file or clipboard was empty."); return; }
+  const first=(text.match(/^[\s\ufeff]*([\s\S])/)||[])[1]||"";
+  const extJson=/\.json$/i.test(name), extXml=/\.xml$/i.test(name);
+  const mode = extJson?"json" : extXml?"xml" : (first==="{"||first==="[")?"json" : first==="<"?"xml" : null;
+  if(!mode){ showBanner("error","This doesn't look like JSON or XML. Paste text that starts with { [ or <."); return; }
+
+  withBusy(`parsing ${name}…`,()=>{
+    if(mode==="json"){
+      let data;
+      try{ data=JSON.parse(text); }
+      catch(err){
+        const nd=tryNDJSON(text);
+        if(nd){ roots=[convertJSON(nd,name.replace(/\.[^.]+$/,"")||"root")]; afterLoad({title:name,format:"json",source:text,sample:null},record); showBanner("info",`Not valid JSON, but parsed as JSON Lines — ${fmt(nd.length)} records.`); return; }
+        const {loc,snip}=jsonErrorSnippet(text,err);
+        showBanner("error","Invalid JSON: "+err.message.replace(/^JSON\.parse: /,"")+loc, snip, true);
+        return;
+      }
+      roots=[convertJSON(data,name.replace(/\.[^.]+$/,"")||"root")];
+      afterLoad({title:name,format:"json",source:text,sample:null},record);
+    } else {
+      const r=parseXML(text);
+      if(!r.roots.length){ showBanner("error","No XML elements found — check that the document has at least one tag."); return; }
+      roots=r.roots;
+      afterLoad({title:name,format:"xml",source:text,sample:null},record);
+      if(r.issues.length){
+        const extra=r.issues.length>1?`  (+${r.issues.length-1} more)`:"";
+        showBanner("warn",`Parsed with issues — tree may be incomplete: ${r.issues[0]}${extra}`);
+      }
+    }
+  });
+}
+function loadFile(file){
+  const reader=new FileReader();
+  reader.onload=()=>loadText(reader.result,file.name);
+  reader.onerror=()=>showBanner("error","Could not read that file.");
+  reader.readAsText(file);
+}
+
+// ---------- history ----------
+function addHistory(desc){
+  if(!desc) return;
+  history.unshift({ id:Date.now()+"-"+Math.random().toString(36).slice(2,6),
+    title:desc.title, format:desc.format, source:desc.source, sample:desc.sample||null,
+    nodes:allNodes.length, when:Date.now() });
+  if(history.length>HISTORY_MAX) history.length=HISTORY_MAX;
+  hSel=0;
+}
+function relTime(ts){
+  const s=(Date.now()-ts)/1000;
+  if(s<60) return "just now";
+  if(s<3600) return Math.floor(s/60)+"m ago";
+  if(s<86400) return Math.floor(s/3600)+"h ago";
+  return Math.floor(s/86400)+"d ago";
+}
+function renderHistory(){
+  if(!history.length){ hlistEl.innerHTML=""; hemptyEl.style.display="block"; return; }
+  hemptyEl.style.display="none";
+  hlistEl.innerHTML=history.map((h,i)=>
+    `<div class="hitem${i===hSel?" sel":""}" data-h="${i}">`+
+    `<span class="fmt ${h.format}">${h.format}</span>`+
+    `<span class="htitle">${escapeHtml(h.title)}</span>`+
+    `<span class="hmeta">${fmt(h.nodes)} nodes · ${relTime(h.when)}</span></div>`).join("");
+  const s=hlistEl.querySelector(".hitem.sel"); if(s) s.scrollIntoView({block:"nearest"});
+}
+function openHistory(){ historyOpen=true; historyEl.classList.add("open"); if(hSel>history.length-1) hSel=Math.max(0,history.length-1); renderHistory(); }
+function closeHistory(){ historyOpen=false; historyEl.classList.remove("open"); viewport.focus(); }
+function removeHistory(i){ if(i<0||i>=history.length) return; history.splice(i,1); if(hSel>history.length-1) hSel=Math.max(0,history.length-1); renderHistory(); }
+function restore(entry){
+  closeHistory();
+  if(entry.sample==="json") genSampleJSON(false);
+  else if(entry.sample==="xml") genSampleXML(false);
+  else loadText(entry.source, entry.title, false);
+}
+hlistEl.addEventListener("click",e=>{ const it=e.target.closest(".hitem"); if(it) restore(history[+it.dataset.h]); });
+historyEl.addEventListener("click",e=>{ if(e.target===historyEl) closeHistory(); });
+
+// ---------- samples (built directly as node model) ----------
+function leaf(kind,key,value){ return {kind,key,value:String(value),attrs:null,children:null,expanded:false}; }
+function genSampleJSON(record){
+  withBusy("building sample JSON…",()=>{
+    const regions=["North America","Europe","APAC","LATAM","MEA"];
+    const depts=["Engineering","Sales","Marketing","Support","Finance","Operations","Design","Legal"];
+    const teams=["Core","Platform","Growth","Data","Mobile","Infra","Research","QA","Field","Enablement"];
+    const first=["Ada","Lin","Omar","Yuki","Sara","Ivan","Noor","Kai","Rui","Ana","Ben","Mai","Tom","Eva"];
+    const last=["Lovelace","Chen","Farah","Tanaka","Kim","Petrov","Haddad","Singh","Costa","Muller","Reyes","Ito"];
+    let c=0;
+    const root={kind:"obj",key:"organization",value:null,attrs:null,children:[],expanded:false};
+    regions.forEach((rg,ri)=>{
+      const R={kind:"obj",key:rg,value:null,attrs:null,children:[],expanded:false};
+      depts.forEach((dp,di)=>{
+        const D={kind:"obj",key:dp,value:null,attrs:null,children:[],expanded:false};
+        teams.forEach((tm,ti)=>{
+          const T={kind:"arr",key:tm,value:null,attrs:null,children:[],expanded:false};
+          for(let p=0;p<30;p++,c++){
+            const name=first[c%first.length]+" "+last[(c*3)%last.length];
+            const P={kind:"obj",key:String(p),value:null,attrs:null,children:[],expanded:false};
+            P.children.push(leaf("str","name",name));
+            P.children.push(leaf("bool","active",(c%4!==0)?"true":"false"));
+            P.children.push(leaf("num","score",String(50+(c*37)%50)));
+            P.children.push(leaf("str","email",name.toLowerCase().replace(/\s/g,".")+"@"+dp.toLowerCase().slice(0,3)+".example.com"));
+            const tags={kind:"arr",key:"tags",value:null,attrs:null,children:[],expanded:false};
+            ["owner","oncall","remote","lead"].forEach((t,k)=>{ if((c+k)%2) tags.children.push(leaf("str",String(tags.children.length),t)); });
+            P.children.push(tags);
+            T.children.push(P);
+          }
+          D.children.push(T);
+        });
+        R.children.push(D);
+      });
+      root.children.push(R);
+    });
+    roots=[root];
+    afterLoad({title:"organization.json", format:"json", source:null, sample:"json"}, record);
+  });
+}
+function genSampleXML(record){
+  withBusy("building sample XML…",()=>{
+    const cats=["books","electronics","garden","toys","apparel","grocery","sports","office","auto","music","tools","pets","beauty","home","health","games","art","travel","baby","outdoor"];
+    const adjs=["compact","premium","classic","eco","pro","mini","ultra","smart","vintage","deluxe"];
+    const nouns=["widget","gadget","kit","set","pack","bundle","device","tool","case","stand"];
+    const root={kind:"el",key:"catalog",value:null,attrs:[{name:"version",value:"2.1"}],children:[],expanded:false};
+    let id=1000;
+    cats.forEach(cat=>{
+      const C={kind:"el",key:"category",value:null,attrs:[{name:"name",value:cat}],children:[],expanded:false};
+      for(let i=0;i<200;i++,id++){
+        const title=adjs[i%adjs.length]+" "+cat+" "+nouns[(i*3)%nouns.length];
+        const P={kind:"el",key:"product",value:null,attrs:[{name:"id",value:"SKU-"+id},{name:"stock",value:String((i*7)%50)}],children:[],expanded:false};
+        P.children.push({kind:"el",key:"title",value:title,attrs:null,children:null,expanded:false});
+        P.children.push({kind:"el",key:"price",value:(9+(i*13)%90)+".99",attrs:null,children:null,expanded:false});
+        P.children.push({kind:"el",key:"rating",value:(3+(i%3))+"."+((i*7)%10),attrs:null,children:null,expanded:false});
+        C.children.push(P);
+      }
+      root.children.push(C);
+    });
+    roots=[root];
+    afterLoad({title:"catalog.xml", format:"xml", source:null, sample:"xml"}, record);
+  });
+}
+
+// ---------- wiring ----------
+$("openBtn").addEventListener("click",()=>fileInput.click());
+fileInput.addEventListener("change",e=>{ if(e.target.files[0]) loadFile(e.target.files[0]); });
+$("sampleJson").addEventListener("click",()=>genSampleJSON(true));
+$("sampleXml").addEventListener("click",()=>genSampleXML(true));
+["dragenter","dragover"].forEach(ev=>document.addEventListener(ev,e=>{ e.preventDefault(); document.body.classList.add("dragging"); }));
+["dragleave","drop"].forEach(ev=>document.addEventListener(ev,e=>{ if(ev==="dragleave"&&e.relatedTarget) return; e.preventDefault(); document.body.classList.remove("dragging"); }));
+document.addEventListener("drop",e=>{ const f=e.dataTransfer.files[0]; if(f) loadFile(f); });
+
+// global paste → new document (unless typing into the search field)
+document.addEventListener("paste",e=>{
+  const t=e.target;
+  if(t && t.id==="pinput") return;                 // let search box paste normally
+  const text=(e.clipboardData||window.clipboardData).getData("text");
+  if(!text || !text.trim()) return;                // ignore empty / image pastes silently
+  e.preventDefault();
+  const first=(text.match(/^[\s\ufeff]*([\s\S])/)||[])[1]||"";
+  if(first==="{"||first==="["||first==="<"){
+    loadText(text, `pasted-${++pasteCount}.${first==="<"?"xml":"json"}`, true);
+  } else {
+    showBanner("error","Clipboard didn't look like JSON or XML — nothing loaded.");
+  }
+});
+viewport.focus();
+</script>
+</body>
+</html>
