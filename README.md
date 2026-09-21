@@ -17,6 +17,7 @@ Open a huge sitemap or a big JSON API dump in a browser tab and you get a wall o
 - **Keyboard-first.** Navigate, expand, collapse, search, and open files without touching the mouse.
 - **Fast search** across keys and values, substring or `*` / `?` wildcards, with jump-to-match and match highlighting.
 - **Collapsed-node previews.** A collapsed node shows its first couple of child values inline, so a list of near-identical `<url>` entries is scannable without expanding each one.
+- **Copy anything** — `c` copies the selected node's value in full (untruncated), `Shift`+`C` copies it as JSON or XML, `p` copies its path. Double-click a row, or use the copy button that appears on hover.
 - **Paste anywhere** (`⌘V` / `Ctrl+V`) to open the clipboard as a new document.
 - **Session history** (`h`) of everything you’ve opened this session, with restore.
 - **Helpful errors** — invalid JSON reports the line, column, and a caret at the fault; malformed XML still renders a best-effort tree with a warning; JSON Lines / NDJSON is detected and parsed automatically.
@@ -40,6 +41,9 @@ Just open [view.arc.host](https://view.arc.host/), then:
 | `←` | Collapse, or jump to the parent |
 | `⏎` / `Space` | Toggle the selected node |
 | `Shift`+`→` / `Shift`+`←` | Expand / collapse the whole subtree |
+| `c` / `⌘C` / `Ctrl+C` | Copy the selected node's value (a container copies its whole subtree) |
+| `Shift`+`C` | Copy the selected node as JSON / XML |
+| `p` | Copy the path to the selected node |
 | `Home` / `End` | First / last node |
 | `PgUp` / `PgDn` | Page up / down |
 | `⌘K` / `Ctrl+K` / `/` | Search |
@@ -61,6 +65,8 @@ Well-formed HTML can be viewed through the XML path, but loosely-written HTML (u
 ## How it works
 
 The document is parsed once into an in-memory node model. The tree you see is a *flattened* list of only the currently-visible nodes; expanding or collapsing splices a range into that list rather than rebuilding it. Rendering draws only the rows inside the viewport (plus a small overscan), positioned with a single transform, so the DOM never holds more than a screenful of rows regardless of document size. Long values are clamped for display (the full value is kept for search).
+
+Because rows are recreated on every scroll and long values are clamped, native text selection would be both fragile and lossy — so it stays off, and copying reads out of the node model instead. That means `c` always yields the complete value, and copying a container re-serializes its subtree back to real JSON or XML.
 
 ## Privacy
 

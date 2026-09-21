@@ -74,6 +74,12 @@
   .val.bool { color:var(--k-bool); }
   .val.null { color:var(--k-null); }
   .val.text { color:var(--k-str); }
+  .copybtn {
+    flex:none; margin-left:10px; padding:0 4px; color:var(--faint); opacity:0;
+    border-radius:3px; cursor:pointer; font-size:11px;
+  }
+  .row:hover .copybtn { opacity:1; }
+  .copybtn:hover { color:var(--text); background:var(--bg); }
   mark { background:var(--amber-strong); color:inherit; border-radius:2px; padding:0 1px; }
 
   /* slim status bar — the only permanent chrome */
@@ -203,6 +209,16 @@
   #banner .snip { margin-top:5px; white-space:pre; overflow-x:auto; color:var(--muted); font-size:11.5px; }
   #banner .x { flex:none; cursor:pointer; color:var(--muted); border:0; background:none; font:inherit; font-size:13px; padding:0 2px; }
   #banner .x:hover { color:var(--text); }
+
+  /* transient copy confirmation */
+  #toast {
+    position:fixed; left:50%; bottom:40px; transform:translate(-50%,6px);
+    background:var(--panel); border:1px solid var(--line); border-radius:8px;
+    padding:6px 12px; font-family:var(--mono); font-size:11.5px; color:var(--text);
+    box-shadow:0 6px 20px rgba(0,0,0,.28); pointer-events:none; z-index:50;
+    opacity:0; transition:opacity .12s, transform .12s;
+  }
+  #toast.show { opacity:1; transform:translate(-50%,0); }
 </style>
 </head>
 <body data-theme="dark">
@@ -247,6 +263,8 @@
     <div class="meta" id="meta"></div>
   </footer>
 
+  <div id="toast"></div>
+
   <div id="help">
     <div class="card">
       <h3>Keyboard</h3>
@@ -256,6 +274,9 @@
         <tr><td class="k"><kbd>←</kbd></td><td>collapse, or jump to parent</td></tr>
         <tr><td class="k"><kbd>⏎</kbd> <kbd>Space</kbd></td><td>toggle node</td></tr>
         <tr><td class="k"><kbd>⇧→</kbd> <kbd>⇧←</kbd></td><td>expand / collapse whole subtree</td></tr>
+        <tr><td class="k"><kbd>c</kbd> <kbd>⌘C</kbd></td><td>copy value of selected node</td></tr>
+        <tr><td class="k"><kbd>⇧C</kbd></td><td>copy node as JSON / XML</td></tr>
+        <tr><td class="k"><kbd>p</kbd></td><td>copy path to node</td></tr>
         <tr><td class="k"><kbd>Home</kbd> <kbd>End</kbd></td><td>first / last node</td></tr>
         <tr><td class="k"><kbd>PgUp</kbd> <kbd>PgDn</kbd></td><td>page up / down</td></tr>
         <tr><td class="k"><kbd>⌘K</kbd> <kbd>/</kbd></td><td>open search</td></tr>
@@ -283,7 +304,7 @@ const viewport=$("viewport"), sizer=$("sizer"), rowsEl=$("rows");
 const palette=$("palette"), pinput=$("pinput"), pcount=$("pcount");
 const emptyEl=$("empty"), busyEl=$("busy"), helpEl=$("help"), fileInput=$("fileInput");
 const historyEl=$("history"), hlistEl=$("hlist"), hemptyEl=$("hempty");
-const crumbEl=$("crumb"), metaEl=$("meta");
+const crumbEl=$("crumb"), metaEl=$("meta"), toastEl=$("toast");
 
 // history (session, in-memory): each entry re-parses on restore
 let history=[], historyOpen=false, hSel=0, pasteCount=0;
@@ -498,6 +519,7 @@ function rowHTML(n,absIdx){
     const q = n.kind==="str"?`"${hl(n.value)}"`:hl(n.value);
     inner+=`<span class="val ${n.kind}">${q}</span>`;
   }
+  inner+=`<span class="copybtn" title="Copy value">⧉</span>`;
   return `<div class="${cls}" data-r="${absIdx}" style="padding-left:${pad}px">${inner}</div>`;
 }
 function render(){
@@ -535,6 +557,79 @@ function updateCrumb(){
 }
 function updateMeta(){
   metaEl.innerHTML=`<b>${fmt(allNodes.length)}</b> nodes · <b>${fmt(flat.length)}</b> visible`;
+}
+
+// ---------- copy ----------
+// Everything is read back out of the model, never the DOM: rendered rows are
+// virtualized (re-created on every scroll) and clamped to DISP_MAX characters.
+function toJS(n){
+  if(n.kind==="obj"){ const o={}; for(const c of n.children) o[c.key]=toJS(c); return o; }
+  if(n.kind==="arr") return n.children.map(c=>toJS(c));
+  if(n.kind==="num"){ const v=Number(n.value); return Number.isNaN(v)?n.value:v; }
+  if(n.kind==="bool") return n.value==="true";
+  if(n.kind==="null") return null;
+  return n.value;
+}
+function escXml(s){ return String(s).replace(/[&<>"]/g,c=>c==="&"?"&amp;":c==="<"?"&lt;":c===">"?"&gt;":"&quot;"); }
+function toXML(n,depth){
+  const pad="  ".repeat(depth);
+  if(n.kind==="text") return pad+escXml(n.value);
+  const attrs=n.attrs?n.attrs.map(a=>` ${a.name}="${escXml(a.value)}"`).join(""):"";
+  if(!n.children) return n.value==null?`${pad}<${n.key}${attrs}/>`:`${pad}<${n.key}${attrs}>${escXml(n.value)}</${n.key}>`;
+  const inner=n.children.map(c=>toXML(c,depth+1)).join("\n");
+  return `${pad}<${n.key}${attrs}>\n${inner}\n${pad}</${n.key}>`;
+}
+function isXmlNode(n){ return n.kind==="el"||n.kind==="text"; }
+// c / ⌘C — the bare value; containers serialize their whole subtree
+function nodeValue(n){
+  if(n.children) return isXmlNode(n)?toXML(n,0):JSON.stringify(toJS(n),null,2);
+  return n.value==null?"":n.value;
+}
+// ⇧C — the node itself, keyed, ready to paste into a document
+function nodeAsText(n){
+  if(isXmlNode(n)) return toXML(n,0);
+  const json=JSON.stringify(toJS(n),null,2);
+  if(!n.parent||n.parent.kind==="arr") return json;
+  return JSON.stringify(n.key)+": "+json;
+}
+// p — root.a.b[3].c for JSON, root/a/b for XML
+function nodePath(n){
+  const parts=[]; let x=n;
+  while(x){
+    const p=x.parent;
+    if(!p) parts.unshift(x.key);
+    else if(isXmlNode(x)) parts.unshift("/"+(x.key||"#text"));
+    else if(p.kind==="arr") parts.unshift("["+x.key+"]");
+    else parts.unshift(/^[A-Za-z_$][\w$]*$/.test(x.key)?"."+x.key:'["'+x.key.replace(/"/g,'\\"')+'"]');
+    x=p;
+  }
+  return parts.join("");
+}
+function legacyCopy(text){
+  const ta=document.createElement("textarea");
+  ta.value=text; ta.setAttribute("readonly","");
+  ta.style.cssText="position:fixed;top:-1000px;opacity:0";
+  document.body.appendChild(ta); ta.select();
+  let ok=false; try{ ok=document.execCommand("copy"); }catch{}
+  ta.remove(); viewport.focus(); return ok;
+}
+function copyText(text,label){
+  if(!text){ toast("Nothing to copy"); return; }
+  const done=()=>toast(`Copied ${label} · ${fmt(text.length)} char${text.length===1?"":"s"}`);
+  const fall=()=>{ legacyCopy(text)?done():toast("Copy failed"); };
+  if(navigator.clipboard&&navigator.clipboard.writeText) navigator.clipboard.writeText(text).then(done,fall);
+  else fall();
+}
+function copyRow(idx,mode){
+  const n=flat[idx]; if(!n) return;
+  if(mode==="path") copyText(nodePath(n),"path");
+  else if(mode==="node") copyText(nodeAsText(n),n.children?"subtree":"node");
+  else copyText(nodeValue(n),n.children?"subtree":"value");
+}
+let toastTimer=null;
+function toast(msg){
+  toastEl.textContent=msg; toastEl.classList.add("show");
+  clearTimeout(toastTimer); toastTimer=setTimeout(()=>toastEl.classList.remove("show"),1400);
 }
 
 // ---------- search ----------
@@ -610,6 +705,8 @@ document.addEventListener("keydown",e=>{
   if(e.key==="Escape" && bannerShown()){ hideBanner(); return; }
   if(!flat.length) return;
   const n=flat[sel];
+  if((e.metaKey||e.ctrlKey)&&e.key.toLowerCase()==="c" && !typing){ e.preventDefault(); copyRow(sel,"value"); return; }
+  if(e.metaKey||e.ctrlKey) return;               // leave other browser shortcuts alone
   switch(e.key){
     case "ArrowDown": e.preventDefault(); select(sel+1); break;
     case "ArrowUp":   e.preventDefault(); select(sel-1); break;
@@ -639,6 +736,9 @@ document.addEventListener("keydown",e=>{
       e.preventDefault();
       if(isExpandable(n)){ n.expanded?collapseAt(sel):expandAt(sel); layout(); updateMeta(); render(); }
       break;
+    case "c": e.preventDefault(); copyRow(sel,"value"); break;
+    case "C": e.preventDefault(); copyRow(sel,"node"); break;
+    case "p": case "P": e.preventDefault(); copyRow(sel,"path"); break;
     case "Home": e.preventDefault(); select(0); break;
     case "End":  e.preventDefault(); select(flat.length-1); break;
     case "PageDown": e.preventDefault(); select(sel+Math.floor(viewport.clientHeight/ROW_H)); break;
@@ -651,7 +751,11 @@ document.addEventListener("keydown",e=>{
 rowsEl.addEventListener("click",e=>{
   const row=e.target.closest(".row"); if(!row) return;
   const idx=+row.dataset.r; const n=flat[idx];
+  if(e.target.classList.contains("copybtn")){ sel=idx; render(); copyRow(idx,"value"); return; }
   if(e.target.classList.contains("tw")&&isExpandable(n)){ n.expanded?collapseAt(idx):expandAt(idx); layout(); updateMeta(); sel=idx; render(); return; }
+  // double-click copies; handled here because the first click re-renders the rows,
+  // which detaches the target a real dblclick listener would need
+  if(e.detail===2){ select(idx); copyRow(idx,"value"); return; }
   select(idx);
 });
 viewport.addEventListener("scroll",render,{passive:true});
